@@ -20,7 +20,13 @@ export const TUNING = {
   cargoDensity: 0.35,
   hayDensity: 0.5, // higher = hay bales are harder to push
   hayBurstSpeed: 1.5, // hit a hay bale faster than this (m/s) and it bursts. Slower just pushes it
+  cattleBarHeight: 0.07, // how far cattle guard bars stick up (m). Higher = bigger rattle
+  mudDrag: 1.2, // how quickly mud slows the truck down. Higher = stickier mud
 };
+
+const GROUND_FRICTION = 0.9;
+/** Normal tire-on-road friction (planck mixes two frictions as the square root of their product) */
+const ROAD_GRIP = Math.sqrt(TUNING.wheelGrip * GROUND_FRICTION);
 
 export const WHEEL_RADIUS = 0.4;
 export const BOX_SIZE = 0.6;
@@ -69,7 +75,10 @@ export const TRUCK_SPRITE = {
 export const WHEEL_SPRITE_RADIUS = 76 * TRUCK_PX;
 
 // ---- The road ----
-/** The road for a level: its height at any x, and the points the physics ground is built from */
+type Point = { x: number; y: number };
+
+/** The road for a level: its height at any x, the points to draw it with, and the pieces of
+ *  solid ground for the physics (split wherever a bridge crosses a gap) */
 export function makeRoad(level: Level) {
   const { heights, startX } = level;
   const groundHeight = (x: number): number => {
@@ -79,20 +88,50 @@ export function makeRoad(level: Level) {
     const i0 = Math.floor(i);
     return heights[i0] + (heights[i0 + 1] - heights[i0]) * (i - i0);
   };
-  const terrain: { x: number; y: number }[] = [];
-  for (let x = startX; x <= level.endX; x += 0.5) terrain.push({ x, y: groundHeight(x) });
-  return { groundHeight, terrain };
+  const bridges = level.bridges ?? [];
+  // Every 0.5 m, plus an exact point at each river bank
+  const xs: number[] = [];
+  for (let x = startX; x <= level.endX; x += 0.5) xs.push(x);
+  for (const b of bridges) xs.push(b.x0, b.x1);
+  xs.sort((a, b) => a - b);
+  const terrain: Point[] = xs.filter((x, i) => i === 0 || x - xs[i - 1] > 1e-6).map((x) => ({ x, y: groundHeight(x) }));
+
+  const overGap = (x: number) => bridges.some((b) => x > b.x0 + 1e-6 && x < b.x1 - 1e-6);
+  const groundPieces: Point[][] = [[]];
+  for (const p of terrain) {
+    if (overGap(p.x)) {
+      if (groundPieces[groundPieces.length - 1].length) groundPieces.push([]);
+    } else {
+      groundPieces[groundPieces.length - 1].push(p);
+    }
+  }
+  return { groundHeight, terrain, groundPieces: groundPieces.filter((g) => g.length > 1) };
 }
 
 export type Status = 'driving' | 'finished' | 'flipped';
 export type Input = { gas: boolean; brake: boolean };
 
 export function createGame(level: Level) {
-  const { groundHeight, terrain } = makeRoad(level);
+  const { groundHeight, terrain, groundPieces } = makeRoad(level);
   const world = new World({ gravity: new Vec2(0, -TUNING.gravity) });
 
   const ground = world.createBody();
-  ground.createFixture(new Chain(terrain.map((p) => new Vec2(p.x, p.y)), false), { friction: 0.9 });
+  for (const piece of groundPieces) {
+    ground.createFixture(new Chain(piece.map((p) => new Vec2(p.x, p.y)), false), { friction: GROUND_FRICTION });
+  }
+  // Bridge planks span the river gaps; their tops are level with the road at the banks
+  for (const bridge of level.bridges ?? []) {
+    const deck = groundHeight(bridge.x0);
+    for (const [a, b] of bridge.planks) {
+      ground.createFixture(new Box((b - a) / 2, 0.15, new Vec2((a + b) / 2, deck - 0.15)), { friction: GROUND_FRICTION });
+    }
+  }
+  // Cattle guard bars: little ridges across the road that rattle the wheels
+  for (const guard of level.cattleGuards ?? []) {
+    for (const x of guard.bars) {
+      ground.createFixture(new Box(0.05, TUNING.cattleBarHeight, new Vec2(x, groundHeight(x))), { friction: GROUND_FRICTION });
+    }
+  }
   // Wall so the truck can't reverse into the post office
   ground.createFixture(new Box(0.2, 5, new Vec2(level.wallX, 5)));
 
@@ -158,7 +197,23 @@ export function createGame(level: Level) {
     if (impact > TUNING.hayBurstSpeed) bale.bursting = true; // removed after the step
   });
 
-  const coins = level.coins.map((x) => ({ x, y: groundHeight(x) + COIN_HEIGHT, taken: false }));
+  // Coins keep the height they have in the picture, but never sit lower than 0.8 m above the road
+  const coins = level.coins.map(({ x, y }) => ({
+    x, y: Math.max(y ?? groundHeight(x) + COIN_HEIGHT, groundHeight(x) + 0.8), taken: false,
+  }));
+
+  // Mud: wheels in it slip (less grip) and can't spin as fast
+  const mudAt = (x: number) => (level.mud ?? []).find((m) => x >= m.x0 && x <= m.x1);
+  const wheelBodies = new Set<Body>([rear.wheel, front.wheel]);
+  // Runs every step for every touching contact, before the physics resolves it
+  world.on('pre-solve', (contact) => {
+    const a = contact.getFixtureA().getBody();
+    const b = contact.getFixtureB().getBody();
+    const wheel = wheelBodies.has(a) ? a : wheelBodies.has(b) ? b : null;
+    if (!wheel || (a !== ground && b !== ground)) return;
+    const mud = mudAt(wheel.getPosition().x);
+    contact.setFriction(ROAD_GRIP * (mud ? mud.grip : 1)); // set every step, so leaving the mud restores grip
+  });
   const mailBagX = level.mailBagX ?? Number.NaN;
   const mailBag = {
     exists: level.mailBagX !== undefined,
@@ -232,11 +287,16 @@ export function createGame(level: Level) {
       speed = -TUNING.motorSpeed; // negative spin drives to the right
       torque = TUNING.motorTorque * (0.25 + 0.75 * throttle);
     }
-    for (const { joint } of [rear, front]) {
+    let inMud = false;
+    for (const { wheel, joint } of [rear, front]) {
+      const mud = mudAt(wheel.getPosition().x);
+      if (mud && wheelOnGround(wheel)) inMud = true;
       joint.enableMotor(motorOn);
-      joint.setMotorSpeed(speed);
+      joint.setMotorSpeed(mud ? speed * mud.speed : speed);
       joint.setMaxMotorTorque(torque);
     }
+    // Mud drags on the truck, so arriving fast doesn't let you skate through
+    chassis.setLinearDamping(inMud ? TUNING.mudDrag : 0);
 
     // In the air: gas lifts the nose, brake drops it
     if (!wheelOnGround(rear.wheel) && !wheelOnGround(front.wheel)) {
@@ -261,7 +321,7 @@ export function createGame(level: Level) {
   }
 
   return {
-    level, groundHeight, terrain,
+    level, groundHeight, terrain, mudAt,
     step, chassis, boxes, hayBales, coins, mailBag, cargoCount, coinCount,
     parcelTotal: () => boxes.length,
     wheels: [rear.wheel, front.wheel],

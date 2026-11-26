@@ -26,6 +26,9 @@ This project uses Expo SDK 58, so your Expo Go app must support SDK 58.
 
 - **Mail bag:** drive into it for 3 more parcels, stacked on top. Double the pay, easier to lose.
 - **Hay bales:** bump gently to push, hit hard to burst through (the jolt can shake parcels loose).
+- **Mud:** slows you down and your tires slip.
+- **Covered bridge:** planks over a river gap.
+- **Cattle guard:** metal bars that rattle the truck and its load.
 - **Coins:** $10 each.
 
 Story text for each chapter is in `src/levels/rural.ts` and `src/levels/track-1.ts`.
@@ -37,10 +40,15 @@ Story text for each chapter is in `src/levels/rural.ts` and `src/levels/track-1.
 - `art/`: source pictures. `scripts/build-assets.py` turns them into game files.
 
 ## Making a new level
-1. Draw a level picture in the same style (road as a band with dark outlines).
+1. Make a level picture plus a level JSON like `art/rural-level-1.json`: `road` points, `coins`,
+   `fuel` (becomes the mail bag), `finishX`, and `features` (`mud`, `bridge`, `cattleGuard`).
+   Hay bales are found in the picture by their color.
 2. Add it to `LEVELS` in `scripts/build-assets.py` with a target steepest slope.
-3. Run `python scripts/build-assets.py`. It traces the road and writes `src/levels/<id>.heights.ts`.
-4. Add a level file in `src/levels/` (coins, scenery, colors) and list it in `src/levels/index.ts`.
+3. Run `python scripts/build-assets.py`. It writes `src/levels/<id>.heights.ts` with the road and features in meters.
+4. Add a level file in `src/levels/` (story, colors, scenery) and list it in `src/levels/index.ts`.
+
+A level with only a picture (no JSON) also works: the script traces the road from the picture,
+like Track 1. Then coins and pickups are placed by hand in the level file.
 
 ## Check the physics without a phone
     npm run test:physics

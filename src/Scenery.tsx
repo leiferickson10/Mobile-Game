@@ -232,15 +232,30 @@ export function Ground({ cam, game }: { cam: Camera; game: Game }) {
   const right = rightEdge(cam) + 1;
   const visible = game.terrain.filter((p) => p.x > left && p.x < right);
   if (visible.length < 2) return null;
+  const bridges = (game.level.bridges ?? []).filter((b) => b.x1 > left && b.x0 < right);
+  const overGap = (x: number) => bridges.some((b) => x > b.x0 + 1e-6 && x < b.x1 - 1e-6);
 
-  const line = (dy: number) => visible.map((p, i) => `${i ? 'L' : 'M'}${sx(cam, p.x)} ${sy(cam, p.y + dy)}`).join(' ');
-  const dirt = `${line(0)} L${sx(cam, visible[visible.length - 1].x)} ${cam.height} L${sx(cam, visible[0].x)} ${cam.height} Z`;
+  const dirtTop = visible.map((p, i) => `${i ? 'L' : 'M'}${sx(cam, p.x)} ${sy(cam, p.y)}`).join(' ');
+  const dirt = `${dirtTop} L${sx(cam, visible[visible.length - 1].x)} ${cam.height} L${sx(cam, visible[0].x)} ${cam.height} Z`;
+
+  // The road line, broken where a bridge crosses the river (the planks are drawn separately)
+  const roadLine = (dy: number) => {
+    let d = '';
+    let pen = false;
+    for (const p of visible) {
+      if (overGap(p.x)) { pen = false; continue; }
+      d += `${pen ? 'L' : 'M'}${sx(cam, p.x)} ${sy(cam, p.y + dy)} `;
+      pen = true;
+    }
+    return d;
+  };
 
   // Dirt specks: fixed pseudo-random spots so they don't flicker
   const specks = [];
   for (let x = Math.floor(left); x < right; x++) {
     for (let k = 0; k < 2; k++) {
       const sxm = x + hash(x * 3 + k);
+      if (overGap(sxm)) continue;
       const depth = 0.8 + hash(x * 7 + k) * 6;
       specks.push(
         <Circle key={`${x}-${k}`} cx={sx(cam, sxm)} cy={sy(cam, game.groundHeight(sxm) - depth)} r={0.07 * cam.scale} fill={theme.dirtSpeck} />,
@@ -249,11 +264,12 @@ export function Ground({ cam, game }: { cam: Camera; game: Game }) {
   }
 
   // The road band sits just under the surface: dark edges, colored middle, optional center dashes
-  const road = line(-0.22);
+  const road = roadLine(-0.22);
   return (
     <G>
       <Path d={dirt} fill={theme.dirt} />
       {specks}
+      {bridges.map((b, i) => <River key={i} cam={cam} x0={b.x0} x1={b.x1} deck={game.groundHeight(b.x0)} time={game.getTime()} />)}
       <Path d={road} fill="none" stroke={theme.roadEdge} strokeWidth={0.46 * cam.scale} strokeLinejoin="round" />
       <Path d={road} fill="none" stroke={theme.road} strokeWidth={0.3 * cam.scale} strokeLinejoin="round" />
       {theme.roadDash && (
@@ -264,6 +280,116 @@ export function Ground({ cam, game }: { cam: Camera; game: Game }) {
       )}
     </G>
   );
+}
+
+/** The river gap under a bridge: dark banks, then water with little waves */
+function River({ cam, x0, x1, deck, time }: { cam: Camera; x0: number; x1: number; deck: number; time: number }) {
+  const w = x1 - x0;
+  const waterTop = -3.2; // meters below the deck
+  const waves = [];
+  for (let k = 0; k < Math.floor(w / 3); k++) {
+    const wx = 1.5 + k * 3 + Math.sin(time * 1.5 + k) * 0.3;
+    waves.push(<Path key={k} d={`M${wx - 0.6} ${-waterTop + 0.6} Q${wx} ${-waterTop + 0.25} ${wx + 0.6} ${-waterTop + 0.6}`} fill="none" stroke="#d5ecf8" strokeWidth={0.1} />);
+  }
+  return (
+    <G transform={at(cam, x0, deck)}>
+      <Rect x={0} y={0} width={w} height={30} fill="#46342a" />
+      <Rect x={0} y={-waterTop} width={w} height={30} fill="#4f93c6" />
+      {waves}
+      <Rect x={-0.3} y={0} width={0.3} height={30} fill="#5a4330" stroke={OUTLINE} strokeWidth={0.05} />
+      <Rect x={w} y={0} width={0.3} height={30} fill="#5a4330" stroke={OUTLINE} strokeWidth={0.05} />
+    </G>
+  );
+}
+
+/** Covered bridges: the far wall, braces and roof, drawn behind the truck so it drives through */
+export function BridgeHouses({ cam, game }: { cam: Camera; game: Game }) {
+  return (
+    <G>
+      {(game.level.bridges ?? []).map((b, i) => {
+        if (b.x1 < cam.camX - 2 || b.x0 > rightEdge(cam) + 2) return null;
+        const w = b.x1 - b.x0;
+        const H = 5.4; // clearance under the wall band: taller than the truck with a stacked load
+        const bays = Math.max(3, Math.round(w / 3.6));
+        const bay = w / bays;
+        return (
+          <G key={i} transform={at(cam, b.x0, game.groundHeight(b.x0))}>
+            {Array.from({ length: bays }, (_, k) => (
+              <Path key={`d${k}`} d={`M${k * bay} 0 L${(k + 1) * bay} ${-H}`} stroke="#8a3a32" strokeWidth={0.22} />
+            ))}
+            {Array.from({ length: bays + 1 }, (_, k) => (
+              <Rect key={`p${k}`} x={k * bay - 0.14} y={-H} width={0.28} height={H} fill="#7a2e28" />
+            ))}
+            <Rect x={0} y={-H - 1.3} width={w} height={1.3} fill="#a8463a" stroke={OUTLINE} strokeWidth={0.08} />
+            <Path d={`M${-1} ${-H - 1.3} L${0.8} ${-H - 2.5} L${w - 0.8} ${-H - 2.5} L${w + 1} ${-H - 1.3} Z`} fill="#5a3e36" stroke={OUTLINE} strokeWidth={0.08} />
+          </G>
+        );
+      })}
+    </G>
+  );
+}
+
+/** What sits on the road surface: bridge planks, mud pits and cattle guards */
+export function RoadFeatures({ cam, game }: { cam: Camera; game: Game }) {
+  const left = cam.camX - 2;
+  const right = rightEdge(cam) + 2;
+  const level = game.level;
+  const t = game.getTime();
+  const parts = [];
+
+  for (const [i, b] of (level.bridges ?? []).entries()) {
+    if (b.x1 < left || b.x0 > right) continue;
+    const deck = game.groundHeight(b.x0);
+    for (const [k, [a, c]] of b.planks.entries()) {
+      parts.push(
+        <Rect key={`pl${i}-${k}`} x={sx(cam, a)} y={sy(cam, deck)} width={(c - a) * cam.scale} height={0.3 * cam.scale}
+          fill="#b98450" stroke={OUTLINE} strokeWidth={0.05 * cam.scale} />,
+      );
+    }
+  }
+
+  for (const [i, m] of (level.mud ?? []).entries()) {
+    if (m.x1 < left || m.x0 > right) continue;
+    // A bowl of mud sunk into the road, with bubbles slowly rising and popping
+    const pts: string[] = [];
+    for (let x = m.x0; x <= m.x1 + 1e-6; x += 0.5) pts.push(`${pts.length ? 'L' : 'M'}${sx(cam, x)} ${sy(cam, game.groundHeight(x) + 0.04)}`);
+    for (let x = m.x1; x >= m.x0 - 1e-6; x -= 0.5) {
+      const u = (x - m.x0) / (m.x1 - m.x0);
+      const depth = 0.25 + 0.75 * Math.sin(Math.PI * u);
+      pts.push(`L${sx(cam, x)} ${sy(cam, game.groundHeight(x) - depth)}`);
+    }
+    parts.push(<Path key={`mud${i}`} d={`${pts.join(' ')} Z`} fill="#4b3324" stroke={OUTLINE} strokeWidth={0.06 * cam.scale} />);
+    for (let k = 0; k < 5; k++) {
+      const bx = m.x0 + ((k + 0.5) / 5) * (m.x1 - m.x0);
+      const phase = (t * 0.7 + hash(k + i * 7)) % 1;
+      parts.push(
+        <Circle key={`mb${i}-${k}`} cx={sx(cam, bx)} cy={sy(cam, game.groundHeight(bx) + 0.05 + phase * 0.15)}
+          r={(0.08 + 0.1 * phase) * cam.scale} fill="#3a2618" opacity={1 - phase} />,
+      );
+    }
+  }
+
+  for (const [i, g] of (level.cattleGuards ?? []).entries()) {
+    if (g.x1 < left || g.x0 > right) continue;
+    const y = game.groundHeight(g.x0);
+    parts.push(
+      <Rect key={`cg${i}`} x={sx(cam, g.x0)} y={sy(cam, y + 0.05)} width={(g.x1 - g.x0) * cam.scale} height={0.5 * cam.scale}
+        fill="#2a2f36" stroke={OUTLINE} strokeWidth={0.05 * cam.scale} />,
+    );
+    for (const [k, bx] of g.bars.entries()) {
+      parts.push(<Rect key={`cgb${i}-${k}`} x={sx(cam, bx - 0.06)} y={sy(cam, game.groundHeight(bx) + 0.08)} width={0.12 * cam.scale} height={0.2 * cam.scale} fill="#aab3bd" />);
+    }
+    for (const [k, px] of [g.x0 - 0.3, g.x1 + 0.3].entries()) {
+      const py = game.groundHeight(px);
+      parts.push(
+        <G key={`cgp${i}-${k}`} transform={at(cam, px, py)}>
+          <Rect x={-0.06} y={-1.3} width={0.12} height={1.3} fill="#e0b83a" stroke={OUTLINE} strokeWidth={0.03} />
+          <Circle cx={0} cy={-1.35} r={0.12} fill="#e0b83a" stroke={OUTLINE} strokeWidth={0.03} />
+        </G>,
+      );
+    }
+  }
+  return <G>{parts}</G>;
 }
 
 // ---------- Pickups, obstacles and the finish flag ----------

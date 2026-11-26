@@ -28,6 +28,15 @@ export type Theme = {
   tree: string;
 };
 
+/** A coin at world x. y is its height (world meters); leave it out to float just above the road */
+export type Coin = { x: number; y?: number };
+/** Mud slows the wheels (speed) and makes them slip (grip): both are multipliers, 1 = normal road */
+export type Mud = { x0: number; x1: number; speed: number; grip: number };
+/** A covered bridge over a river gap. The road has no ground between x0 and x1: only the planks */
+export type Bridge = { x0: number; x1: number; deckY: number; planks: [number, number][] };
+/** A cattle guard: metal bars across the road that rattle the truck (and its parcels) */
+export type CattleGuard = { x0: number; x1: number; bars: number[] };
+
 /** The picture a level was traced from (written by scripts/build-assets.py) */
 export type Picture = { xMPerPx: number; yMPerPx: number; startPx: number; width: number; height: number };
 
@@ -46,9 +55,12 @@ export type Level = {
   wallX: number; // can't reverse past this (the post office)
   truckStartX: number;
 
-  coins: number[]; // world x of each coin
+  coins: Coin[];
   mailBagX?: number; // pick up for 3 more parcels
   hayBales: number[]; // world x of each hay bale obstacle
+  mud?: Mud[];
+  bridges?: Bridge[];
+  cattleGuards?: CattleGuard[];
 
   scenery: Scenery[]; // drawn back to front
   picture: Picture; // for the HUD minimap (its image is in src/levels/images.ts)

@@ -10,7 +10,8 @@ import {
 import { LEVELS, type Level } from './src/levels';
 import { LEVEL_IMAGES } from './src/levels/images';
 import {
-  Backdrop, Coins, FenceLayer, FinishFlag, Ground, HayBales, MailBag, OUTLINE, SceneryLayer, type Camera,
+  Backdrop, BridgeHouses, Coins, FenceLayer, FinishFlag, Ground, HayBales, MailBag, OUTLINE, RoadFeatures,
+  SceneryLayer, type Camera,
 } from './src/Scenery';
 
 const PAY_PER_BOX = 100;
@@ -171,8 +172,10 @@ function DeliveryRun({ level, onRetry, onChapters, onNext }: {
         <Backdrop cam={cam} theme={level.theme} />
         <SceneryLayer cam={cam} game={game} />
         <FenceLayer cam={cam} game={game} />
+        <BridgeHouses cam={cam} game={game} />
         <FinishFlag cam={cam} game={game} />
         <Ground cam={cam} game={game} />
+        <RoadFeatures cam={cam} game={game} />
         <Coins cam={cam} game={game} />
         <MailBag cam={cam} game={game} />
         <HayBales cam={cam} game={game} />
